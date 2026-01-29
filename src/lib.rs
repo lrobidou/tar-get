@@ -118,7 +118,7 @@ mod tests {
         i: i64,
     }
 
-    fn serialize_data(writer: impl Write, value: &Data) -> bincode::Result<()> {
+    fn serialize_data(writer: &mut impl Write, value: &Data) -> bincode::Result<()> {
         bincode::serialize_into(writer, value)
     }
 
@@ -140,7 +140,7 @@ mod tests {
 
         let file = File::create(path).unwrap();
         let mut buffer = BufWriter::new(file);
-        serialize(&mut buffer, &data, |w, d| serialize_data(w, d)).unwrap();
+        serialize(&mut buffer, &data, serialize_data).unwrap();
         buffer.flush().unwrap();
 
         let file = File::open(path).unwrap();
@@ -172,7 +172,7 @@ mod tests {
         ];
         let file = File::create(path).unwrap();
         let mut buffer = BufWriter::new(file);
-        serialize(&mut buffer, &data, |w, d| serialize_data(w, d)).unwrap();
+        serialize(&mut buffer, &data, serialize_data).unwrap();
         buffer.flush().unwrap();
 
         for (i, expected) in data.iter().enumerate() {
@@ -208,7 +208,7 @@ mod tests {
         ];
         let file = File::create(path).unwrap();
         let mut buffer = BufWriter::new(file);
-        serialize(&mut buffer, &data, |w, d| serialize_data(w, d)).unwrap();
+        serialize(&mut buffer, &data, serialize_data).unwrap();
         buffer.flush().unwrap();
 
         let file = File::open(path).unwrap();
