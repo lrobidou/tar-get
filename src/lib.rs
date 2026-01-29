@@ -5,7 +5,7 @@ use std::{
     path::Path,
 };
 
-pub fn serialize<T, WS>(writer: &mut WS, v: &[T])
+pub fn serialize<T, WS>(writer: &mut WS, v: &[T], mut parser: impl for<'w> FnMut(&'w mut WS, &T))
 where
     T: Serialize,
     WS: Write + Seek,
@@ -25,7 +25,7 @@ where
     for item in v {
         let pos = writer.stream_position().unwrap();
         offsets.push(pos - payload_start);
-        bincode::serialize_into(&mut *writer, item).unwrap();
+        parser(writer, item);
     }
 
     let end_position = writer.stream_position().unwrap();
@@ -90,6 +90,10 @@ mod tests {
         i: i64,
     }
 
+    fn serialize_data(writer: impl Write, value: &Data) {
+        bincode::serialize_into(writer, value).unwrap();
+    }
+
     #[test]
     fn one_struct() {
         let path = "path.batar";
@@ -100,7 +104,7 @@ mod tests {
         }];
         let file = File::create(path).unwrap();
         let mut buffer = BufWriter::new(file);
-        serialize(&mut buffer, &data);
+        serialize(&mut buffer, &data, |w, d| serialize_data(w, d));
         buffer.flush().unwrap();
         let result = deserialize(path, 0);
         assert_eq!(data[0], result);
@@ -129,7 +133,7 @@ mod tests {
         ];
         let file = File::create(path).unwrap();
         let mut buffer = BufWriter::new(file);
-        serialize(&mut buffer, &data);
+        serialize(&mut buffer, &data, |w, d| serialize_data(w, d));
         buffer.flush().unwrap();
 
         for (i, expected) in data.iter().enumerate() {
