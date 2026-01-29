@@ -1,0 +1,11 @@
+[package]
+name = "batar"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+bincode = "1"
+serde = "1"
+
+[dev-dependencies]
+serde = { version = "1.0", features = ["derive"] }
