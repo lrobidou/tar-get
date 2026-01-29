@@ -8,20 +8,29 @@ use std::{
 pub fn serialize<T: Serialize>(path: &str, v: &[T]) {
     let mut file = File::create(path).unwrap();
 
-    let mut offsets = Vec::with_capacity(v.len());
-    let mut blobs = Vec::new();
+    let count = v.len() as u64;
 
-    for item in v {
-        offsets.push(blobs.len() as u64);
-        let data: Vec<u8> = bincode::serialize(item).unwrap();
-        blobs.extend_from_slice(&data);
+    file.write_all(&count.to_le_bytes()).unwrap();
+    // reserve space for the header
+    for _ in 0..count {
+        file.write_all(&0u64.to_le_bytes()).unwrap();
     }
 
-    file.write_all(&(v.len() as u64).to_le_bytes()).unwrap();
-    for off in &offsets {
+    let payload_start = file.stream_position().unwrap();
+
+    // stream payload and record offsets
+    let mut offsets = Vec::with_capacity(v.len());
+    for item in v {
+        let pos = file.stream_position().unwrap();
+        offsets.push(pos - payload_start);
+        bincode::serialize_into(&mut file, item).unwrap();
+    }
+
+    // rewrite header
+    file.seek(SeekFrom::Start(8)).unwrap();
+    for off in offsets {
         file.write_all(&off.to_le_bytes()).unwrap();
     }
-    file.write_all(&blobs).unwrap();
 }
 
 pub fn deserialize<P, T: for<'a> Deserialize<'a>>(path: P, i: usize) -> T
