@@ -5,32 +5,37 @@ use std::{
     path::Path,
 };
 
-pub fn serialize<T: Serialize>(path: &str, v: &[T]) {
-    let mut file = File::create(path).unwrap();
-
+pub fn serialize<T, WS>(writer: &mut WS, v: &[T])
+where
+    T: Serialize,
+    WS: Write + Seek,
+{
     let count = v.len() as u64;
-
-    file.write_all(&count.to_le_bytes()).unwrap();
+    let start_position = writer.stream_position().unwrap();
+    writer.write_all(&count.to_le_bytes()).unwrap();
     // reserve space for the header
     for _ in 0..count {
-        file.write_all(&0u64.to_le_bytes()).unwrap();
+        writer.write_all(&0u64.to_le_bytes()).unwrap();
     }
 
-    let payload_start = file.stream_position().unwrap();
+    let payload_start = writer.stream_position().unwrap();
 
     // stream payload and record offsets
     let mut offsets = Vec::with_capacity(v.len());
     for item in v {
-        let pos = file.stream_position().unwrap();
+        let pos = writer.stream_position().unwrap();
         offsets.push(pos - payload_start);
-        bincode::serialize_into(&mut file, item).unwrap();
+        bincode::serialize_into(&mut *writer, item).unwrap();
     }
 
+    let end_position = writer.stream_position().unwrap();
+
     // rewrite header
-    file.seek(SeekFrom::Start(8)).unwrap();
+    writer.seek(SeekFrom::Start(start_position + 8)).unwrap();
     for off in offsets {
-        file.write_all(&off.to_le_bytes()).unwrap();
+        writer.write_all(&off.to_le_bytes()).unwrap();
     }
+    writer.seek(SeekFrom::Start(end_position)).unwrap();
 }
 
 pub fn deserialize<P, T: for<'a> Deserialize<'a>>(path: P, i: usize) -> T
@@ -73,6 +78,8 @@ pub fn add(left: u64, right: u64) -> u64 {
 #[cfg(test)]
 mod tests {
 
+    use std::io::BufWriter;
+
     use super::*;
     use serde::{Deserialize, Serialize};
 
@@ -91,7 +98,10 @@ mod tests {
             v: vec![8, 98, 9],
             i: 65454254,
         }];
-        serialize(path, &data);
+        let file = File::create(path).unwrap();
+        let mut buffer = BufWriter::new(file);
+        serialize(&mut buffer, &data);
+        buffer.flush().unwrap();
         let result = deserialize(path, 0);
         assert_eq!(data[0], result);
         std::fs::remove_file(path).unwrap();
@@ -117,7 +127,11 @@ mod tests {
                 i: 2385243420343543114,
             },
         ];
-        serialize(path, &data);
+        let file = File::create(path).unwrap();
+        let mut buffer = BufWriter::new(file);
+        serialize(&mut buffer, &data);
+        buffer.flush().unwrap();
+
         for (i, expected) in data.iter().enumerate() {
             assert_eq!(expected, &deserialize(path, i));
         }
