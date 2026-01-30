@@ -59,6 +59,18 @@ pub enum DeserializationError<T> {
     IndexNotFound { asked: usize, max: usize },
 }
 
+fn get_offset_of_element_i<RS>(reader: &mut RS, stream_start: u64, i: u64) -> std::io::Result<u64>
+where
+    RS: Read + Seek,
+{
+    let mut buf = [0u8; 8];
+    reader.seek(SeekFrom::Start(stream_start + 8 + i * 8))?;
+    reader.read_exact(&mut buf)?;
+    Ok(u64::from_le_bytes(buf))
+}
+
+/// Deserializes the element `i` of type `T` from `reader` using `deserializer`.
+/// Moving `reader` to the correct position is O(1).
 pub fn deserialize<RS, F, E, T: for<'a> Deserialize<'a>>(
     mut reader: RS,
     i: usize,
@@ -68,36 +80,37 @@ where
     RS: Read + Seek,
     F: Fn(Vec<u8>) -> Result<T, E>,
 {
+    let stream_start = reader.stream_position()?;
     let mut buf = [0u8; 8];
     reader.read_exact(&mut buf)?;
-    let count = u64::from_le_bytes(buf) as usize;
+    let count = u64::from_le_bytes(buf);
 
-    if i >= count {
+    if i >= count as usize {
         return Err(DeserializationError::IndexNotFound {
             asked: i,
-            max: count,
+            max: count as usize,
         });
     }
+    let i = i as u64;
 
-    let mut offsets = vec![0u64; count + 1];
-    for j in 0..count {
-        reader.read_exact(&mut buf)?;
-        offsets[j] = u64::from_le_bytes(buf);
-    }
+    let data_start = stream_start + 8 + count * 8;
 
-    let data_start = 8 + count * 8;
-    let start = data_start as u64 + offsets[i];
+    reader.seek(SeekFrom::Start(stream_start + 8 + i * 8))?;
+    reader.read_exact(&mut buf)?;
+    let data_i_start = data_start + get_offset_of_element_i(&mut reader, stream_start, i)?;
+
     let end = if i + 1 < count {
-        data_start as u64 + offsets[i + 1]
+        data_start + get_offset_of_element_i(&mut reader, stream_start, i + 1)?
     } else {
         reader.seek(SeekFrom::End(0)).unwrap()
     };
 
-    let len = (end - start) as usize;
+    let len = (end - data_i_start) as usize;
     let mut data = vec![0u8; len];
 
-    reader.seek(SeekFrom::Start(start))?;
+    reader.seek(SeekFrom::Start(data_i_start))?;
     reader.read_exact(&mut data)?;
+    reader.seek(SeekFrom::Start(stream_start))?;
 
     deserializer(data).map_err(DeserializationError::Deserialization)
 }
