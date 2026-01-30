@@ -115,6 +115,19 @@ where
     deserializer(data).map_err(DeserializationError::Deserialization)
 }
 
+/// Returns the number of objects in `reader`.
+pub fn get_num_of_objects<RS>(reader: &mut RS) -> std::io::Result<u64>
+where
+    RS: Read + Seek,
+{
+    let stream_start = reader.stream_position()?;
+    let mut buf = [0u8; 8];
+    reader.read_exact(&mut buf)?;
+    let count = u64::from_le_bytes(buf);
+    reader.seek(SeekFrom::Start(stream_start))?;
+    Ok(count)
+}
+
 #[cfg(test)]
 mod tests {
 
@@ -198,6 +211,22 @@ mod tests {
                 &deserialize(buffer, i, |reader| deserialize_data(&reader)).unwrap()
             );
         }
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn empty() {
+        let path = "path4.batar";
+        let data = [];
+        let file = File::create(path).unwrap();
+        let mut buffer = BufWriter::new(file);
+        serialize(&mut buffer, &data, serialize_data).unwrap();
+        buffer.flush().unwrap();
+
+        let file = File::open(path).unwrap();
+        let mut buffer = BufReader::new(file);
+        assert_eq!(get_num_of_objects(&mut buffer).unwrap(), 0);
+
         std::fs::remove_file(path).unwrap();
     }
 
