@@ -7,10 +7,13 @@ pub enum SerializationError<T> {
     Serialization(T),
 }
 
+/// Serializes elements from `v` into `writer` using `serializer`.
+/// A header lookup table is inserted at the starting position in the `writer`
+/// to allow for constant time computation of the position of any elements of `v` in `writer``.
 pub fn serialize<T, F, WS, E>(
     writer: &mut WS,
     v: &[T],
-    mut parser: F,
+    mut serializer: F,
 ) -> Result<(), SerializationError<E>>
 where
     T: Serialize,
@@ -32,7 +35,7 @@ where
     for item in v {
         let pos = writer.stream_position()?;
         offsets.push(pos - payload_start);
-        parser(writer, item).map_err(SerializationError::Serialization)?;
+        serializer(writer, item).map_err(SerializationError::Serialization)?;
     }
 
     let end_position = writer.stream_position()?;
