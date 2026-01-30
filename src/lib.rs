@@ -150,7 +150,7 @@ mod tests {
         bincode::serialize_into(writer, value)
     }
 
-    pub fn deserialize_data<'a, T>(bytes: &'a [u8]) -> Result<T, bincode::Error>
+    fn deserialize_data<'a, T>(bytes: &'a [u8]) -> Result<T, bincode::Error>
     where
         T: serde::de::Deserialize<'a>,
     {
