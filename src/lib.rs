@@ -16,7 +16,6 @@ where
     T: Serialize,
     WS: Write + Seek,
     F: for<'w> FnMut(&'w mut WS, &T) -> Result<(), E>,
-    E: std::error::Error,
 {
     let count = v.len() as u64;
     let start_position = writer.stream_position()?;
