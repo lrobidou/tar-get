@@ -1,6 +1,6 @@
 [package]
 name = "tar-get"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 description = "Serialize a vector of objects to disk, then start deserilizing them in constant time."
 
@@ -11,3 +11,4 @@ thiserror = "2"
 [dev-dependencies]
 serde = { version = "1.0", features = ["derive"] }
 bincode = "1"
+uuid = { version = "1.20.0", features = ["v4"] }

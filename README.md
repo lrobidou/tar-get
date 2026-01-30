@@ -33,7 +33,7 @@ fn serialize_and_deserialize() {
     let mut buffer = BufWriter::new(file);
 
     // let's serialize the vector
-    serialize(&mut buffer, &data, serialize_data).unwrap();
+    serialize_slice(&mut buffer, &data, serialize_data).unwrap();
     buffer.flush().unwrap();
 
     // let's get a struct back
@@ -47,3 +47,16 @@ fn serialize_and_deserialize() {
     std::fs::remove_file(path).unwrap();
  }
 ```
+If you only have an iterator over your data, instead of
+```rust
+serialize_slice(&mut buffer, &data, serialize_data).unwrap();
+```
+You can use 
+```rust
+let iterator = data.iter();
+let nb_elem = data.len();
+serialize_iter(&mut buffer, iterator, nb_elem, serialize_data).unwrap();
+```
+If the `iterator` contains less than `nb_elem`, some space will be lost in the buffer.
+
+If the `iterator` contains more than `nb_elem` elements, iteration will stop after `nb_elem` elements.
