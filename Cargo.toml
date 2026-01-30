@@ -1,7 +1,8 @@
 [package]
-name = "batar"
+name = "tar-get"
 version = "0.1.0"
 edition = "2024"
+description = "Serialize a vector of objects to disk, then start deserilizing them in constant time."
 
 [dependencies]
 serde = "1"
