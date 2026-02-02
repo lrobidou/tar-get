@@ -1,5 +1,8 @@
 use serde::{Deserialize, Serialize};
-use std::io::{self, Read, Seek, SeekFrom, Write};
+use std::{
+    fs::File,
+    io::{self, BufReader, BufWriter, Read, Seek, SeekFrom, Write},
+};
 
 #[derive(thiserror::Error, Debug)]
 pub enum SerializationError<T> {
@@ -33,7 +36,6 @@ where
     }
 
     let payload_start = writer.stream_position()?;
-    dbg!(payload_start);
 
     // stream payload and record offsets
     let mut offsets = Vec::with_capacity(nb_elem);
@@ -50,12 +52,9 @@ where
     // rewrite header
     writer.seek(SeekFrom::Start(start_count_position))?;
     writer.write_all(&nb_actual_elements.to_le_bytes())?;
-    dbg!(nb_actual_elements);
-    dbg!(&offsets);
 
     for off in offsets {
         writer.write_all(&off.to_le_bytes())?;
-        dbg!(writer.stream_position().unwrap());
     }
     writer.seek(SeekFrom::Start(end_position))?;
     Ok(())
@@ -84,7 +83,7 @@ pub enum DeserializationError<T> {
     #[error("Error during deserialization")]
     Deserialization(T),
     #[error("Tried to access index {asked}, but max is {max}")]
-    IndexNotFound { asked: usize, max: usize },
+    IndexNotFound { asked: u64, max: u64 },
 }
 
 fn get_offset_of_element_i<RS>(reader: &mut RS, offsets_start: u64, i: u64) -> std::io::Result<u64>
@@ -102,7 +101,7 @@ where
 /// The reader is moved back to where it was before the call fo the function.
 pub fn deserialize<RS, F, E, T: for<'a> Deserialize<'a>>(
     mut reader: RS,
-    i: usize,
+    i: u64,
     deserializer: F,
 ) -> Result<T, DeserializationError<E>>
 where
@@ -121,20 +120,17 @@ where
 
     let offset_start = reader.stream_position()?;
 
-    if i >= count as usize {
+    if i >= count {
         return Err(DeserializationError::IndexNotFound {
             asked: i,
-            max: count as usize,
+            max: count,
         });
     }
-    let i = i as u64;
 
     let payload_start = offset_start + capacity * 8;
 
     reader.seek(SeekFrom::Start(offset_start + i * 8))?;
-    reader.read_exact(&mut buf)?;
     let data_i_start = payload_start + get_offset_of_element_i(&mut reader, offset_start, i)?;
-    dbg!(data_i_start);
 
     let end = if i + 1 < count {
         payload_start + get_offset_of_element_i(&mut reader, offset_start, i + 1)?
@@ -152,11 +148,109 @@ where
     deserializer(data).map_err(DeserializationError::Deserialization)
 }
 
+/// Returns the position of the count, and the (start, end) of the last element.
+/// The reader is returned in its previous state.
+pub fn get_positions_of_count_start_end_of_last_obejct<RS, E>(
+    reader: &mut RS,
+) -> Result<(u64, (u64, u64)), DeserializationError<E>>
+where
+    RS: Read + Seek,
+{
+    // OPTIMIZE the whole function
+    let stream_start = reader.stream_position()?;
+
+    let mut buf = [0u8; 8];
+    reader.read_exact(&mut buf)?;
+    let capacity = u64::from_le_bytes(buf);
+
+    let count_start = reader.stream_position()?;
+
+    reader.read_exact(&mut buf)?;
+    let count = u64::from_le_bytes(buf);
+
+    let offset_start = reader.stream_position()?;
+
+    assert!(count > 0); // TODO
+    let i = count - 1;
+
+    let payload_start = offset_start + capacity * 8;
+
+    reader.seek(SeekFrom::Start(offset_start + i * 8))?;
+    reader.read_exact(&mut buf)?;
+
+    let data_i_start = payload_start + get_offset_of_element_i(reader, offset_start, i)?;
+    let end = if i + 1 < count {
+        payload_start + get_offset_of_element_i(reader, offset_start, i + 1)?
+    } else {
+        reader.seek(SeekFrom::End(0)).unwrap()
+    };
+
+    reader.seek(SeekFrom::Start(stream_start))?;
+    Ok((count_start, (data_i_start, end)))
+}
+
+/// Deserializes and removes the last element of type `T` from `reader` using `deserializer`.
+/// Moving `reader` to the correct position is O(1).
+/// The reader is moved back to where it was before the call fo the function.
+/// Returns the obect and the number of element left.
+pub fn remove_last_element<F, E, T: for<'a> Deserialize<'a>>(
+    file: &mut File,
+    deserializer: F,
+) -> Result<T, DeserializationError<E>>
+where
+    F: Fn(Vec<u8>) -> Result<T, E>,
+{
+    let file_start = file.stream_position()?;
+    let mut reader = BufReader::new(file);
+
+    let (count_start, (start, end)) = get_positions_of_count_start_end_of_last_obejct(&mut reader)?;
+
+    // read the count
+    reader.seek(SeekFrom::Start(count_start))?;
+    let mut buf = [0u8; 8];
+    reader.read_exact(&mut buf)?;
+    let count = u64::from_le_bytes(buf);
+
+    // read the last element
+    reader.seek(SeekFrom::Start(start))?;
+    let len = (end - start) as usize;
+    let mut data = vec![0u8; len];
+    reader.read_exact(&mut data)?;
+    let last_object = deserializer(data).map_err(DeserializationError::Deserialization)?;
+
+    // Read the remaining bytes
+    reader.seek(SeekFrom::Start(end))?;
+    let mut remaining_bytes = Vec::new();
+    reader.read_to_end(&mut remaining_bytes)?;
+    let file = reader.into_inner();
+    let mut writer = BufWriter::new(file);
+
+    // rewrite count
+    writer.seek(SeekFrom::Start(count_start))?;
+    writer.write_all(&(count - 1).to_le_bytes())?;
+
+    // Wwrite the remaining bytes to erase the last element
+    writer.seek(SeekFrom::Start(end))?;
+    writer.write_all(&remaining_bytes)?;
+
+    let file = writer.into_inner().unwrap(); // TODO
+
+    // Truncate the file to the new length
+    file.set_len(start + remaining_bytes.len() as u64)?;
+
+    file.seek(SeekFrom::Start(file_start))?;
+
+    Ok(last_object)
+}
+
 /// Returns the number of objects in `reader`.
+/// The reader is set back to its previous position.
 pub fn get_capacity_and_num_of_objects<RS>(reader: &mut RS) -> std::io::Result<(u64, u64)>
 where
     RS: Read + Seek,
 {
+    let stream_start = reader.stream_position()?;
+
     let mut buf = [0u8; 8];
     reader.read_exact(&mut buf)?;
     let capacity = u64::from_le_bytes(buf);
@@ -164,6 +258,8 @@ where
     let mut buf = [0u8; 8];
     reader.read_exact(&mut buf)?;
     let count = u64::from_le_bytes(buf);
+
+    reader.seek(SeekFrom::Start(stream_start))?;
     Ok((capacity, count))
 }
 
@@ -171,8 +267,9 @@ where
 mod tests {
 
     use std::{
-        fs::File,
+        fs::{File, OpenOptions},
         io::{BufReader, BufWriter},
+        os::unix::fs::MetadataExt,
     };
 
     use super::*;
@@ -251,7 +348,7 @@ mod tests {
             let buffer = BufReader::new(file);
             assert_eq!(
                 expected,
-                &deserialize(buffer, i, |reader| deserialize_data(&reader)).unwrap()
+                &deserialize(buffer, i as u64, |reader| deserialize_data(&reader)).unwrap()
             );
         }
         std::fs::remove_file(&path).unwrap();
@@ -407,7 +504,7 @@ mod tests {
             let buffer = BufReader::new(file);
             assert_eq!(
                 expected,
-                &deserialize(buffer, i, |reader| deserialize_data(&reader)).unwrap()
+                &deserialize(buffer, i as u64, |reader| deserialize_data(&reader)).unwrap()
             );
         }
         std::fs::remove_file(&path).unwrap();
@@ -441,8 +538,9 @@ mod tests {
         for (i, _expected) in data.iter().enumerate() {
             let file = File::open(&path).unwrap();
             let buffer = BufReader::new(file);
-            match deserialize(buffer, i, |reader| deserialize_data::<Data>(&reader)) {
-                Err(DeserializationError::IndexNotFound { asked, max: 0 }) if asked == i => {}
+            match deserialize(buffer, i as u64, |reader| deserialize_data::<Data>(&reader)) {
+                Err(DeserializationError::IndexNotFound { asked, max: 0 }) if asked == i as u64 => {
+                }
                 _ => panic!("test failed"),
             };
         }
@@ -479,7 +577,7 @@ mod tests {
             let buffer = BufReader::new(file);
             assert_eq!(
                 expected,
-                &deserialize(buffer, i, |reader| deserialize_data(&reader)).unwrap()
+                &deserialize(buffer, i as u64, |reader| deserialize_data(&reader)).unwrap()
             );
         }
         std::fs::remove_file(&path).unwrap();
@@ -554,6 +652,57 @@ mod tests {
             Err(DeserializationError::IndexNotFound { asked: 8, max: 3 }) => {}
             _ => panic!("test failed"),
         }
+
+        std::fs::remove_file(&path).unwrap();
+    }
+
+    #[test]
+    fn test_remove_last_element() {
+        let path = generate_random_filename();
+        let data = [
+            Data {
+                u: u16::MAX,
+                v: vec![5; 585845],
+                i: 65454254,
+            },
+            Data {
+                u: 0,
+                v: vec![9; 55],
+                i: 6542345420,
+            },
+            Data {
+                u: u16::MAX,
+                v: vec![78; 100],
+                i: 2385243420343543114,
+            },
+        ];
+
+        let file = File::create(&path).unwrap();
+
+        assert_eq!(file.metadata().unwrap().size(), 0);
+
+        let mut buffer = BufWriter::new(file);
+        serialize_iter(&mut buffer, data.iter(), data.len(), serialize_data).unwrap();
+        buffer.flush().unwrap();
+
+        let mut file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&path)
+            .unwrap();
+        assert_eq!(file.metadata().unwrap().len(), 586094);
+
+        let x = remove_last_element(&mut file, |reader| deserialize_data::<Data>(&reader)).unwrap();
+        assert_eq!(file.metadata().unwrap().len(), 585976);
+        assert_eq!(x, data[2]);
+
+        let x = remove_last_element(&mut file, |reader| deserialize_data::<Data>(&reader)).unwrap();
+        assert_eq!(file.metadata().unwrap().len(), 585903);
+        assert_eq!(x, data[1]);
+
+        let x = remove_last_element(&mut file, |reader| deserialize_data::<Data>(&reader)).unwrap();
+        assert_eq!(file.metadata().unwrap().size(), 40);
+        assert_eq!(x, data[0]);
 
         std::fs::remove_file(&path).unwrap();
     }
