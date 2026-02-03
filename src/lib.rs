@@ -1,4 +1,3 @@
-use serde::{Deserialize, Serialize};
 use std::{
     error::Error,
     fs::File,
@@ -22,7 +21,7 @@ pub fn serialize_iter<'a, I, T, F, WS, E>(
     mut serializer: F,
 ) -> Result<(), SerializationError<E>>
 where
-    T: Serialize + 'a,
+    T: 'a,
     WS: Write + Seek,
     F: for<'w> FnMut(&'w mut WS, &T) -> Result<(), E>,
     I: Iterator<Item = &'a T>,
@@ -70,7 +69,7 @@ pub fn serialize_slice<'a, T, F, WS, E>(
     serializer: F,
 ) -> Result<(), SerializationError<E>>
 where
-    T: Serialize + 'a,
+    T: 'a,
     WS: Write + Seek,
     F: for<'w> FnMut(&'w mut WS, &T) -> Result<(), E>,
 {
@@ -100,7 +99,7 @@ where
 /// Deserializes the element `i` of type `T` from `reader` using `deserializer`.
 /// Moving `reader` to the correct position is O(1).
 /// The reader is moved back to where it was before the call fo the function.
-pub fn deserialize<RS, F, E, T: for<'a> Deserialize<'a>>(
+pub fn deserialize<RS, F, E, T>(
     mut reader: RS,
     i: u64,
     deserializer: F,
@@ -206,10 +205,10 @@ pub enum RemoveElementError<T, W: Write> {
 /// Moving `reader` to the correct position is O(1).
 /// The reader is moved back to where it was before the call fo the function.
 /// Returns the obect and the number of element left.
-pub fn remove_last_element<'b, F, E, T: for<'a> Deserialize<'a>>(
-    file: &'b mut File,
+pub fn remove_last_element<F, E, T>(
+    file: &mut File,
     deserializer: F,
-) -> Result<T, RemoveElementError<E, &'b mut File>>
+) -> Result<T, RemoveElementError<E, &mut File>>
 where
     F: Fn(Vec<u8>) -> Result<T, E>,
 {
@@ -325,7 +324,6 @@ pub fn append_element<'b, F, E, T>(
     mut serializer: F,
 ) -> Result<(), AppendError<E, &'b mut File>>
 where
-    T: Serialize,
     F: for<'w> FnMut(&mut BufWriter<&mut File>, &T) -> Result<(), E>,
     E: Error,
 {
