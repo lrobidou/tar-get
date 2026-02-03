@@ -319,12 +319,13 @@ where
     })
 }
 
-pub fn append_element<'b, F, E, T: for<'a> Deserialize<'a>>(
+pub fn append_element<'b, F, E, T>(
     file: &'b mut File,
     item: &T,
     mut serializer: F,
 ) -> Result<(), AppendError<E, &'b mut File>>
 where
+    T: Serialize,
     F: for<'w> FnMut(&mut BufWriter<&mut File>, &T) -> Result<(), E>,
     E: Error,
 {
