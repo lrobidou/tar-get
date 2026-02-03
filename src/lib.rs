@@ -294,6 +294,16 @@ pub struct Metadata {
     offsets: Vec<u64>,
 }
 
+impl Metadata {
+    pub fn get_capacity(&self) -> u64 {
+        self.capacity
+    }
+
+    pub fn get_nb_objects(&self) -> u64 {
+        self.nb_objects
+    }
+}
+
 pub fn get_metadata<RS>(reader: &mut RS) -> std::io::Result<Metadata>
 where
     RS: Read + Seek,
