@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::{
+    error::Error,
     fs::File,
     io::{self, BufReader, BufWriter, Read, Seek, SeekFrom, Write},
 };
@@ -135,7 +136,7 @@ where
     let end = if i + 1 < count {
         payload_start + get_offset_of_element_i(&mut reader, offset_start, i + 1)?
     } else {
-        reader.seek(SeekFrom::End(0)).unwrap()
+        reader.seek(SeekFrom::End(0))?
     };
 
     let len = (end - data_i_start) as usize;
@@ -150,9 +151,9 @@ where
 
 /// Returns the position of the count, and the (start, end) of the last element.
 /// The reader is returned in its previous state.
-pub fn get_positions_of_count_start_end_of_last_obejct<RS, E>(
+pub fn get_positions_of_count_start_end_of_last_obejct<RS>(
     reader: &mut RS,
-) -> Result<(u64, (u64, u64)), DeserializationError<E>>
+) -> Result<(u64, (u64, u64)), io::Error>
 where
     RS: Read + Seek,
 {
@@ -182,21 +183,33 @@ where
     let end = if i + 1 < count {
         payload_start + get_offset_of_element_i(reader, offset_start, i + 1)?
     } else {
-        reader.seek(SeekFrom::End(0)).unwrap()
+        reader.seek(SeekFrom::End(0))?
     };
 
     reader.seek(SeekFrom::Start(stream_start))?;
     Ok((count_start, (data_i_start, end)))
 }
 
+#[derive(thiserror::Error, Debug)]
+pub enum RemoveElementError<T, W: Write> {
+    #[error("IO error")]
+    IO(#[from] io::Error),
+    #[error("Error during deserialization")]
+    Deserialization(T),
+    #[error(
+        "Error when converting the witer buffer back into a file. Likely, the buffer couldn't be flushed."
+    )]
+    ConversionError(#[from] std::io::IntoInnerError<BufWriter<W>>),
+}
+
 /// Deserializes and removes the last element of type `T` from `reader` using `deserializer`.
 /// Moving `reader` to the correct position is O(1).
 /// The reader is moved back to where it was before the call fo the function.
 /// Returns the obect and the number of element left.
-pub fn remove_last_element<F, E, T: for<'a> Deserialize<'a>>(
-    file: &mut File,
+pub fn remove_last_element<'b, F, E, T: for<'a> Deserialize<'a>>(
+    file: &'b mut File,
     deserializer: F,
-) -> Result<T, DeserializationError<E>>
+) -> Result<T, RemoveElementError<E, &'b mut File>>
 where
     F: Fn(Vec<u8>) -> Result<T, E>,
 {
@@ -216,7 +229,7 @@ where
     let len = (end - start) as usize;
     let mut data = vec![0u8; len];
     reader.read_exact(&mut data)?;
-    let last_object = deserializer(data).map_err(DeserializationError::Deserialization)?;
+    let last_object = deserializer(data).map_err(RemoveElementError::Deserialization)?;
 
     // Read the remaining bytes
     reader.seek(SeekFrom::Start(end))?;
@@ -233,7 +246,7 @@ where
     writer.seek(SeekFrom::Start(end))?;
     writer.write_all(&remaining_bytes)?;
 
-    let file = writer.into_inner().unwrap(); // TODO
+    let file = writer.into_inner()?;
 
     // Truncate the file to the new length
     file.set_len(start + remaining_bytes.len() as u64)?;
@@ -241,6 +254,110 @@ where
     file.seek(SeekFrom::Start(file_start))?;
 
     Ok(last_object)
+}
+
+#[derive(thiserror::Error, Debug)]
+pub enum AppendError<T, W: Write> {
+    #[error("IO error")]
+    IO(#[from] io::Error),
+    #[error("Error during serialization")]
+    Serialization(T),
+    #[error(
+        "Error when converting the witer buffer back into a file. Likely, the buffer couldn't be flushed."
+    )]
+    ConversionError(#[from] std::io::IntoInnerError<BufWriter<W>>),
+}
+
+pub fn reserve_capacity<WS>(writer: &mut WS, capacity: u64) -> Result<(), std::io::Error>
+where
+    WS: Write + Seek,
+{
+    let start = writer.stream_position()?;
+
+    // write capacity
+    writer.write_all(&capacity.to_le_bytes())?;
+    // reserve space for the number of element
+    writer.write_all(&0u64.to_le_bytes())?;
+    // reserve space for the header
+    for _ in 0..capacity {
+        writer.write_all(&0u64.to_le_bytes())?;
+    }
+
+    writer.seek(SeekFrom::Start(start))?;
+
+    Ok(())
+}
+
+#[derive(PartialEq, Debug)]
+pub struct Metadata {
+    capacity: u64,
+    nb_objects: u64,
+    offsets: Vec<u64>,
+}
+
+pub fn get_metadata<RS>(reader: &mut RS) -> std::io::Result<Metadata>
+where
+    RS: Read + Seek,
+{
+    let start = reader.stream_position()?;
+
+    let (capacity, nb_objects) = get_capacity_and_num_of_objects(reader)?;
+    let mut v = vec![];
+    for i in 0..nb_objects {
+        let mut buf = [0u8; 8];
+        reader.seek(SeekFrom::Start(start + 16 + i * 8))?;
+        reader.read_exact(&mut buf)?;
+        v.push(u64::from_le_bytes(buf));
+    }
+
+    reader.seek(SeekFrom::Start(start))?;
+
+    Ok(Metadata {
+        capacity,
+        nb_objects,
+        offsets: v,
+    })
+}
+
+pub fn append_element<'b, F, E, T: for<'a> Deserialize<'a>>(
+    file: &'b mut File,
+    item: &T,
+    mut serializer: F,
+) -> Result<(), AppendError<E, &'b mut File>>
+where
+    F: for<'w> FnMut(&mut BufWriter<&mut File>, &T) -> Result<(), E>,
+    E: Error,
+{
+    let file_start = file.stream_position()?;
+    let mut reader = BufReader::new(file);
+
+    let (capacity, nb_objects) = get_capacity_and_num_of_objects(&mut reader)?;
+    assert!(nb_objects < capacity); // TODO exceptions
+    reader.seek_relative(8)?;
+    let count_start = reader.stream_position()?;
+    // read the count
+    let mut buf = [0u8; 8];
+    reader.read_exact(&mut buf)?;
+    let count = u64::from_le_bytes(buf);
+
+    assert_eq!(count, nb_objects);
+
+    let file = reader.into_inner();
+    let mut writer = BufWriter::new(file);
+
+    let start_element = writer.seek(SeekFrom::End(0))?; // TODO might not be the end in practice
+    serializer(&mut writer, item).map_err(AppendError::Serialization)?;
+    // rewrite count
+    writer.seek(SeekFrom::Start(count_start))?;
+    writer.write_all(&(count + 1).to_le_bytes())?;
+
+    writer.seek(SeekFrom::Start(file_start + 8 + 8 + count * 8))?;
+    writer.write_all(&(start_element - (16 + capacity * 8)).to_le_bytes())?;
+
+    let file = writer.into_inner()?;
+    file.seek(SeekFrom::Start(file_start))?;
+
+    Ok(())
 }
 
 /// Returns the number of objects in `reader`.
@@ -698,6 +815,68 @@ mod tests {
 
         let x = remove_last_element(&mut file, |reader| deserialize_data::<Data>(&reader)).unwrap();
         assert_eq!(file.metadata().unwrap().len(), 585903);
+        assert_eq!(x, data[1]);
+
+        let x = remove_last_element(&mut file, |reader| deserialize_data::<Data>(&reader)).unwrap();
+        assert_eq!(file.metadata().unwrap().size(), 40);
+        assert_eq!(x, data[0]);
+
+        std::fs::remove_file(&path).unwrap();
+    }
+
+    #[test]
+    fn reserve_and_use() {
+        let path = generate_random_filename();
+        let data = [
+            Data {
+                u: u16::MAX,
+                v: vec![5; 10],
+                i: 65454254,
+            },
+            Data {
+                u: 0,
+                v: vec![9; 10],
+                i: 6542345420,
+            },
+            Data {
+                u: u16::MAX,
+                v: vec![78; 10],
+                i: 2385243420343543114,
+            },
+        ];
+
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(&path)
+            .unwrap();
+        assert_eq!(file.metadata().unwrap().size(), 0);
+
+        let mut buffer = BufWriter::new(file);
+        reserve_capacity(&mut buffer, data.len() as u64).unwrap();
+        buffer.flush().unwrap();
+
+        let mut file = buffer.into_inner().unwrap();
+        for x in &data {
+            append_element(&mut file, x, |a, b| serialize_data(a, b)).unwrap();
+        }
+
+        let mut file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&path)
+            .unwrap();
+
+        assert_eq!(file.metadata().unwrap().len(), 124);
+
+        let x = remove_last_element(&mut file, |reader| deserialize_data::<Data>(&reader)).unwrap();
+        assert_eq!(file.metadata().unwrap().len(), 96);
+        assert_eq!(x, data[2]);
+
+        let x = remove_last_element(&mut file, |reader| deserialize_data::<Data>(&reader)).unwrap();
+        assert_eq!(file.metadata().unwrap().len(), 68);
         assert_eq!(x, data[1]);
 
         let x = remove_last_element(&mut file, |reader| deserialize_data::<Data>(&reader)).unwrap();
