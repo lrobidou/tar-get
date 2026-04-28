@@ -2,6 +2,7 @@
 name = "tar-get"
 version = "0.4.3"
 edition = "2024"
+license-file = "LICENSE"
 description = "Serialize a vector of objects to disk, then start deserilizing them in constant time."
 
 [dependencies]
